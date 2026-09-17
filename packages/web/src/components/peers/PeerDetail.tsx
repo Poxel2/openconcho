@@ -14,7 +14,7 @@ import {
 	Users,
 	X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
 	useConclusionTargetPeers,
 	usePeer,
@@ -85,18 +85,37 @@ export function PeerDetail() {
 	const [knowledgeQuery, setKnowledgeQuery] = useState("");
 	const [activeKnowledgeQuery, setActiveKnowledgeQuery] = useState("");
 	const [knowledgeTarget, setKnowledgeTarget] = useState<string | null>(null);
-	const { data: targetPeers } = useConclusionTargetPeers(workspaceId, peerId);
+	const {
+		data: discovery,
+		isLoading: discoveryLoading,
+		error: discoveryError,
+	} = useConclusionTargetPeers(workspaceId, peerId);
+	const targetPeers = discovery?.targets ?? [];
+	const discoveryIncomplete = discovery !== undefined && !discovery.complete;
+
+	// Reset per-peer target state when the viewed peer changes: a stale target
+	// from the previous peer would silently scope the knowledge search wrong and
+	// a burnt auto-select flag would disable auto-picking for the new peer.
+	// Modified: 2026-09-17 — review round (ADV-stale-peer-target).
+	const prevPeerIdRef = useRef(peerId);
+	useEffect(() => {
+		if (prevPeerIdRef.current !== peerId) {
+			prevPeerIdRef.current = peerId;
+			setKnowledgeTarget(null);
+			setTargetAutoSelected(false);
+		}
+	}, [peerId]);
 
 	// Auto-select when exactly one real target exists (e.g. shopware-developer →
 	// JACOB). Only when nothing is picked yet, so an explicit user choice wins.
 	const [targetAutoSelected, setTargetAutoSelected] = useState(false);
 	useEffect(() => {
-		if (targetAutoSelected || knowledgeTarget !== null || !targetPeers) return;
+		if (targetAutoSelected || knowledgeTarget !== null || !discovery) return;
 		if (targetPeers.length === 1) {
 			setKnowledgeTarget(targetPeers[0].id);
 			setTargetAutoSelected(true);
 		}
-	}, [targetAutoSelected, knowledgeTarget, targetPeers]);
+	}, [targetAutoSelected, knowledgeTarget, discovery, targetPeers]);
 
 	const {
 		data: knowledgeResults,
@@ -342,7 +361,15 @@ export function PeerDetail() {
 								<Badge variant="blue">
 									scope: {mask(peerId)} → {mask(knowledgeTarget ?? "(select observed peer)")}
 								</Badge>
-								{targetPeers !== undefined && targetPeers.length === 0 && (
+								{discoveryIncomplete && (
+									<Caption>
+										Target list may be incomplete (store exceeds the discovery page cap).
+									</Caption>
+								)}
+								{discoveryError && (
+									<Caption>Target discovery failed — knowledge search unavailable.</Caption>
+								)}
+								{!discoveryLoading && !discoveryError && targetPeers.length === 0 && (
 									<Caption>This peer holds no conclusions yet.</Caption>
 								)}
 							</div>
@@ -371,15 +398,17 @@ export function PeerDetail() {
 									}}
 								>
 									<option value="">
-										{targetPeers === undefined
+										{discoveryLoading
 											? "loading targets…"
-											: targetPeers.length === 0
-												? "no targets available"
-												: "observed peer — pick target"}
+											: discoveryError
+												? "target discovery failed"
+												: targetPeers.length === 0
+													? "no targets available"
+													: "observed peer — pick target"}
 									</option>
-									{(targetPeers ?? []).map((t) => (
+									{targetPeers.map((t) => (
 										<option key={t.id} value={t.id}>
-											{t.id} ({t.count})
+											{mask(t.id)} ({t.count})
 										</option>
 									))}
 								</select>

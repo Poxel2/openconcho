@@ -688,14 +688,19 @@ export function useQueryConclusions(
  * This is what powers the target picker: the user picks among targets that
  * actually exist instead of guessing peer ids into an empty self-scope.
  *
- * Returns a sorted list of `{ id, count }` (count = number of stored rows for
- * that target, i.e. provenance strength). Empty list = this observer holds no
+ * Returns `{ targets, complete }`: `targets` is a sorted list of `{ id, count }`
+ * (count = number of stored rows for that target, i.e. provenance strength),
+ * `complete` is false when the walk hit the page cap before listing every page
+ * (targets may then be incomplete). Empty list = this observer holds no
  * conclusions at all.
  *
  * Modified: 2026-09-17 — Pox local repair round 2 (pox/local-repair): added to
  * fix C2 — the knowledge panel previously self-scoped `observed` to the peer,
  * which is always empty for knowledge-holder peers (e.g. shopware-developer →
  * JACOB holds everything, → self holds nothing).
+ * Modified: 2026-09-17 — review round: return `complete` flag instead of
+ * silently truncating at the page cap (ARC-discovery-walk-truncation /
+ * ADV-discovery-page-cap).
  *
  * Author: Hermes (Pox subagent)
  */
@@ -728,9 +733,12 @@ export function useConclusionTargetPeers(workspaceId: string, observerPeerId: st
 				if (page >= pages || items.length === 0) break;
 				page += 1;
 			}
-			return Array.from(counters.entries())
-				.map(([id, count]) => ({ id, count }))
-				.sort((a, b) => b.count - a.count || a.id.localeCompare(b.id));
+			return {
+				targets: Array.from(counters.entries())
+					.map(([id, count]) => ({ id, count }))
+					.sort((a, b) => b.count - a.count || a.id.localeCompare(b.id)),
+				complete: page >= pages,
+			};
 		},
 		enabled: Boolean(workspaceId) && Boolean(observerPeerId),
 	});
