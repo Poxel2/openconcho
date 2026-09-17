@@ -627,6 +627,11 @@ export function useSessionContext(workspaceId: string, sessionId: string) {
 
 // ─── Conclusions ──────────────────────────────────────────────────────────────
 
+// Target-discovery walk bounds (see useConclusionTargetPeers): enough for
+// realistically sized per-observer stores; discovery is a read-only listing.
+const CONCLUSION_TARGET_PAGE_SIZE = 100;
+const CONCLUSION_TARGET_MAX_PAGES = 40;
+
 export function useConclusions(
 	workspaceId: string,
 	filters: Record<string, unknown> = {},
@@ -676,17 +681,75 @@ export function useQueryConclusions(
 }
 
 /**
+ * Discover the actual conclusion target peers available for one observer peer.
+ *
+ * Walks `conclusions/list` (paginated, `page`/`size`) with `filters.observer_id`
+ * and collects the distinct `observed_id` values from real stored conclusions.
+ * This is what powers the target picker: the user picks among targets that
+ * actually exist instead of guessing peer ids into an empty self-scope.
+ *
+ * Returns a sorted list of `{ id, count }` (count = number of stored rows for
+ * that target, i.e. provenance strength). Empty list = this observer holds no
+ * conclusions at all.
+ *
+ * Modified: 2026-09-17 — Pox local repair round 2 (pox/local-repair): added to
+ * fix C2 — the knowledge panel previously self-scoped `observed` to the peer,
+ * which is always empty for knowledge-holder peers (e.g. shopware-developer →
+ * JACOB holds everything, → self holds nothing).
+ *
+ * Author: Hermes (Pox subagent)
+ */
+export function useConclusionTargetPeers(workspaceId: string, observerPeerId: string) {
+	return useQuery({
+		queryKey: ["conclusions-target-peers", workspaceId, observerPeerId] as const,
+		queryFn: async () => {
+			const counters = new Map<string, number>();
+			let page = 1;
+			let pages = 1;
+			while (page <= CONCLUSION_TARGET_MAX_PAGES) {
+				const { data, error } = await client.current.POST(
+					"/v3/workspaces/{workspace_id}/conclusions/list",
+					{
+						params: {
+							path: { workspace_id: workspaceId },
+							query: { page, size: CONCLUSION_TARGET_PAGE_SIZE, reverse: false },
+						},
+						body: { filters: { observer_id: observerPeerId } },
+					},
+				);
+				if (error) err(error);
+				const items = data.items ?? [];
+				for (const item of items) {
+					if (item.observed_id) {
+						counters.set(item.observed_id, (counters.get(item.observed_id) ?? 0) + 1);
+					}
+				}
+				pages = data.pages ?? 1;
+				if (page >= pages || items.length === 0) break;
+				page += 1;
+			}
+			return Array.from(counters.entries())
+				.map(([id, count]) => ({ id, count }))
+				.sort((a, b) => b.count - a.count || a.id.localeCompare(b.id));
+		},
+		enabled: Boolean(workspaceId) && Boolean(observerPeerId),
+	});
+}
+
+/**
  * Semantic search over conclusions in the observer/observed scope of one peer.
  *
  * Unlike `useSearchPeer` (message search on the peer itself), this queries the
  * dedicated conclusions store with the peer as the *observer*, so it also finds
  * knowledge the peer holds *about other peers* (e.g. shopware-developer → JACOB).
- * The server requires both an observer and an observed peer; when no observed
- * peer is given, the query self-scopes to the observer peer (its own knowledge).
+ * The server requires both an observer and an observed peer; the observed target
+ * MUST be resolved by the caller (target-picker / auto-selection in PeerDetail).
+ * No implicit self-scope: self-scoping produced guaranteed-zero results (C2).
  *
- * Modified: 2026-09-17 — Pox local repair (openconcho pox/local-repair): added
- * for the peer-page conclusion search so scoped conclusions are searchable
- * alongside messages.
+ * Modified: 2026-09-17 — Pox local repair round 2 (pox/local-repair): removed
+ * the implicit self-scope fallback (observed=self always returned 0 rows);
+ * target is now explicit. Callers discover valid targets via
+ * `useConclusionTargetPeers` and auto-select when exactly one exists.
  *
  * Author: Hermes (Pox subagent)
  */
@@ -697,9 +760,7 @@ export function useQueryPeerConclusions(
 	observedPeerId: string | null,
 	enabled = false,
 ) {
-	const filters: Record<string, unknown> = observedPeerId
-		? { observer: peerId, observed: observedPeerId }
-		: { observer: peerId, observed: peerId };
+	const filters: Record<string, unknown> = { observer: peerId, observed: observedPeerId ?? "" };
 	return useQuery({
 		queryKey: QK.conclusionsQuery(workspaceId, query, { ...filters, scope: "peer" }),
 		queryFn: async () => {
@@ -712,7 +773,14 @@ export function useQueryPeerConclusions(
 			);
 			return data ?? err(error);
 		},
-		enabled: enabled && Boolean(workspaceId) && Boolean(peerId) && Boolean(query),
+		// Never fire with an empty target: the server requires both filters, and
+		// an observed="" request is a guaranteed zero (or worse, an error).
+		enabled:
+			enabled &&
+			Boolean(workspaceId) &&
+			Boolean(peerId) &&
+			Boolean(query) &&
+			Boolean(observedPeerId),
 	});
 }
 

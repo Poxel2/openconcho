@@ -14,8 +14,9 @@ import {
 	Users,
 	X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+	useConclusionTargetPeers,
 	usePeer,
 	usePeerCard,
 	usePeerContext,
@@ -77,11 +78,26 @@ export function PeerDetail() {
 	const [searchQuery, setSearchQuery] = useState("");
 
 	// Knowledge/conclusion search: scoped to this peer as observer. The observed
-	// peer (whose data the knowledge is about) defaults to the peer itself and
-	// can be narrowed via the input, e.g. shopware-developer → JACOB.
+	// target is DISCOVERED from the conclusions this peer actually holds (no
+	// hardcoded peer names, no unrestricted fallback): when exactly one target
+	// exists it is auto-selected; otherwise the user picks it explicitly from
+	// the picker. Typing a free-form name is no longer the only path — C2 fix.
 	const [knowledgeQuery, setKnowledgeQuery] = useState("");
 	const [activeKnowledgeQuery, setActiveKnowledgeQuery] = useState("");
-	const [knowledgeTarget, setKnowledgeTarget] = useState("");
+	const [knowledgeTarget, setKnowledgeTarget] = useState<string | null>(null);
+	const { data: targetPeers } = useConclusionTargetPeers(workspaceId, peerId);
+
+	// Auto-select when exactly one real target exists (e.g. shopware-developer →
+	// JACOB). Only when nothing is picked yet, so an explicit user choice wins.
+	const [targetAutoSelected, setTargetAutoSelected] = useState(false);
+	useEffect(() => {
+		if (targetAutoSelected || knowledgeTarget !== null || !targetPeers) return;
+		if (targetPeers.length === 1) {
+			setKnowledgeTarget(targetPeers[0].id);
+			setTargetAutoSelected(true);
+		}
+	}, [targetAutoSelected, knowledgeTarget, targetPeers]);
+
 	const {
 		data: knowledgeResults,
 		isLoading: knowledgeLoading,
@@ -90,7 +106,7 @@ export function PeerDetail() {
 		workspaceId,
 		peerId,
 		activeKnowledgeQuery,
-		knowledgeTarget.trim() || null,
+		knowledgeTarget,
 		Boolean(activeKnowledgeQuery),
 	);
 
@@ -317,30 +333,56 @@ export function PeerDetail() {
 								<Brain className="w-3.5 h-3.5" strokeWidth={2} />
 								Search peer knowledge (conclusions)
 							</SectionHeading>
-							<Muted className="mb-3 block text-xs">
+							<Muted className="mb-2 block text-xs">
 								Semantic search over distilled conclusions this peer holds — not raw messages.
-								Scoped to observer <MonoCaption as="span">{mask(peerId)}</MonoCaption> → observed{" "}
-								<MonoCaption as="span">{mask(knowledgeTarget.trim() || peerId)}</MonoCaption>.
 							</Muted>
+							{/* Selected scope, shown up front: observer → discovered target. The
+								target comes from a picker over REAL stored targets, never a guess. */}
+							<div className="flex items-center gap-2 mb-3 flex-wrap text-xs">
+								<Badge variant="blue">
+									scope: {mask(peerId)} → {mask(knowledgeTarget ?? "(select observed peer)")}
+								</Badge>
+								{targetPeers !== undefined && targetPeers.length === 0 && (
+									<Caption>This peer holds no conclusions yet.</Caption>
+								)}
+							</div>
 							<form
 								onSubmit={(e) => {
 									e.preventDefault();
 									setActiveKnowledgeQuery(knowledgeQuery.trim());
 								}}
-								className="flex gap-2 mb-4"
+								className="flex gap-2 mb-4 flex-wrap"
 							>
 								<Input
 									value={knowledgeQuery}
 									onChange={(e) => setKnowledgeQuery(e.target.value)}
 									placeholder="Search this peer's conclusions…"
-									className="flex-1 text-sm"
+									className="flex-1 text-sm min-w-48"
 								/>
-								<Input
-									value={knowledgeTarget}
-									onChange={(e) => setKnowledgeTarget(e.target.value)}
-									placeholder="observed peer (optional)"
-									className="w-48 text-xs font-mono"
-								/>
+								<select
+									aria-label="Observed peer (knowledge target)"
+									value={knowledgeTarget ?? ""}
+									onChange={(e) => setKnowledgeTarget(e.target.value || null)}
+									className="w-56 rounded-md px-2 py-1 text-xs font-mono"
+									style={{
+										background: "var(--bg-3)",
+										border: "1px solid var(--border)",
+										color: "var(--text-2)",
+									}}
+								>
+									<option value="">
+										{targetPeers === undefined
+											? "loading targets…"
+											: targetPeers.length === 0
+												? "no targets available"
+												: "observed peer — pick target"}
+									</option>
+									{(targetPeers ?? []).map((t) => (
+										<option key={t.id} value={t.id}>
+											{t.id} ({t.count})
+										</option>
+									))}
+								</select>
 								<Button type="submit" variant="accent" disabled={knowledgeLoading}>
 									{knowledgeLoading ? "…" : "Search"}
 								</Button>
@@ -368,31 +410,62 @@ export function PeerDetail() {
 									>
 										{knowledgeLoading ? (
 											<PageLoader />
+										) : !knowledgeTarget ? (
+											<Muted>
+												Pick an observed peer above — targets are listed from the conclusions this
+												peer actually holds.
+											</Muted>
 										) : !Array.isArray(knowledgeResults) ||
 											(knowledgeResults as components["schemas"]["Conclusion"][]).length === 0 ? (
 											<Muted>No conclusions found for this scope.</Muted>
 										) : (
-											(knowledgeResults as components["schemas"]["Conclusion"][]).map((c) => (
-												<div
-													key={c.id}
-													className="py-3 px-4 rounded-lg"
-													style={{
-														background: "var(--surface)",
-														border: "1px solid var(--border)",
-													}}
-												>
-													<div className="flex items-center gap-2 mb-1.5 flex-wrap">
-														<Badge variant="yellow">
-															{mask(c.observer_id)} → {mask(c.observed_id)}
-														</Badge>
-														{c.session_id && <Caption>session: {mask(c.session_id)}</Caption>}
-														{c.created_at && (
-															<Caption>{new Date(c.created_at).toLocaleString()}</Caption>
+											/* Display-only dedup: identical contents repeat heavily in the
+											   store (bulk import). Collapse them here — the database is NOT
+											   touched (no data lane in this repair). First occurrence wins;
+											   provenance (observer→observed, session, timestamp) is kept
+											   from that first row. */
+											(() => {
+												const all = knowledgeResults as components["schemas"]["Conclusion"][];
+												const seenContent = new Set<string>();
+												const deduped = all.filter((c) => {
+													if (seenContent.has(c.content)) return false;
+													seenContent.add(c.content);
+													return true;
+												});
+												const hidden = all.length - deduped.length;
+												return (
+													<>
+														{deduped.map((c) => (
+															<div
+																key={c.id}
+																className="py-3 px-4 rounded-lg"
+																style={{
+																	background: "var(--surface)",
+																	border: "1px solid var(--border)",
+																}}
+															>
+																<div className="flex items-center gap-2 mb-1.5 flex-wrap">
+																	<Badge variant="yellow">
+																		{mask(c.observer_id)} → {mask(c.observed_id)}
+																	</Badge>
+																	{c.session_id && <Caption>session: {mask(c.session_id)}</Caption>}
+																	{c.created_at && (
+																		<Caption>{new Date(c.created_at).toLocaleString()}</Caption>
+																	)}
+																</div>
+																<Body className="whitespace-pre-wrap">{mask(c.content)}</Body>
+															</div>
+														))}
+														{hidden > 0 && (
+															<Muted className="text-xs">
+																{deduped.length} unique result{deduped.length === 1 ? "" : "s"} (
+																{hidden} identical duplicate{hidden === 1 ? "" : "s"} hidden —
+																display only, no data changed)
+															</Muted>
 														)}
-													</div>
-													<Body className="whitespace-pre-wrap">{mask(c.content)}</Body>
-												</div>
-											))
+													</>
+												);
+											})()
 										)}
 									</motion.div>
 								)}
