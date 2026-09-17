@@ -15,7 +15,7 @@ export function useWorkspaces(page = 1, pageSize = 20) {
 		queryKey: QK.workspaces(page, pageSize),
 		queryFn: async () => {
 			const { data, error } = await client.current.POST("/v3/workspaces/list", {
-				params: { query: { page, page_size: pageSize } },
+				params: { query: { page, size: pageSize } },
 				body: {},
 			});
 			return data ?? err(error);
@@ -139,7 +139,7 @@ export function usePeers(workspaceId: string, page = 1, pageSize = 20) {
 			const { data, error } = await client.current.POST(
 				"/v3/workspaces/{workspace_id}/peers/list",
 				{
-					params: { path: { workspace_id: workspaceId }, query: { page, page_size: pageSize } },
+					params: { path: { workspace_id: workspaceId }, query: { page, size: pageSize } },
 					body: {},
 				},
 			);
@@ -253,7 +253,7 @@ export function usePeerSessions(workspaceId: string, peerId: string, page = 1, p
 				{
 					params: {
 						path: { workspace_id: workspaceId, peer_id: peerId },
-						query: { page, page_size: pageSize },
+						query: { page, size: pageSize },
 					},
 					body: {},
 				},
@@ -323,7 +323,7 @@ export function useSessions(workspaceId: string, page = 1, pageSize = 20) {
 				{
 					params: {
 						path: { workspace_id: workspaceId },
-						query: { page, page_size: pageSize },
+						query: { page, size: pageSize },
 					},
 					body: {},
 				},
@@ -412,7 +412,7 @@ export function useSessionMessages(
 				{
 					params: {
 						path: { workspace_id: workspaceId, session_id: sessionId },
-						query: { page, page_size: pageSize },
+						query: { page, size: pageSize },
 					},
 					body: {},
 				},
@@ -642,7 +642,7 @@ export function useConclusions(
 				{
 					params: {
 						path: { workspace_id: workspaceId },
-						query: { page, page_size: pageSize, reverse },
+						query: { page, size: pageSize, reverse },
 					},
 					body: filters,
 				},
@@ -672,6 +672,47 @@ export function useQueryConclusions(
 			return data ?? err(error);
 		},
 		enabled: enabled && Boolean(workspaceId) && Boolean(query),
+	});
+}
+
+/**
+ * Semantic search over conclusions in the observer/observed scope of one peer.
+ *
+ * Unlike `useSearchPeer` (message search on the peer itself), this queries the
+ * dedicated conclusions store with the peer as the *observer*, so it also finds
+ * knowledge the peer holds *about other peers* (e.g. shopware-developer → JACOB).
+ * The server requires both an observer and an observed peer; when no observed
+ * peer is given, the query self-scopes to the observer peer (its own knowledge).
+ *
+ * Modified: 2026-09-17 — Pox local repair (openconcho pox/local-repair): added
+ * for the peer-page conclusion search so scoped conclusions are searchable
+ * alongside messages.
+ *
+ * Author: Hermes (Pox subagent)
+ */
+export function useQueryPeerConclusions(
+	workspaceId: string,
+	peerId: string,
+	query: string,
+	observedPeerId: string | null,
+	enabled = false,
+) {
+	const filters: Record<string, unknown> = observedPeerId
+		? { observer: peerId, observed: observedPeerId }
+		: { observer: peerId, observed: peerId };
+	return useQuery({
+		queryKey: QK.conclusionsQuery(workspaceId, query, { ...filters, scope: "peer" }),
+		queryFn: async () => {
+			const { data, error } = await client.current.POST(
+				"/v3/workspaces/{workspace_id}/conclusions/query",
+				{
+					params: { path: { workspace_id: workspaceId } },
+					body: { query, top_k: 25, filters },
+				},
+			);
+			return data ?? err(error);
+		},
+		enabled: enabled && Boolean(workspaceId) && Boolean(peerId) && Boolean(query),
 	});
 }
 
@@ -746,7 +787,7 @@ export function useDreams(
 					{
 						params: {
 							path: { workspace_id: workspaceId },
-							query: { page, page_size: pageSize, reverse: false },
+							query: { page, size: pageSize, reverse: false },
 						},
 						body: filters,
 					},

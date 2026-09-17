@@ -1,6 +1,7 @@
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+	Brain,
 	Check,
 	Eye,
 	EyeOff,
@@ -19,10 +20,12 @@ import {
 	usePeerCard,
 	usePeerContext,
 	usePeerRepresentation,
+	useQueryPeerConclusions,
 	useSearchPeer,
 	useSetPeerCard,
 	useUpdatePeer,
 } from "@/api/queries";
+import type { components } from "@/api/schema.d.ts";
 import { Breadcrumb } from "@/components/layout/Breadcrumb";
 import { Badge } from "@/components/shared/Badge";
 import { ErrorAlert } from "@/components/shared/ErrorAlert";
@@ -72,6 +75,24 @@ export function PeerDetail() {
 
 	const [cardDraft, setCardDraft] = useState<string | null>(null);
 	const [searchQuery, setSearchQuery] = useState("");
+
+	// Knowledge/conclusion search: scoped to this peer as observer. The observed
+	// peer (whose data the knowledge is about) defaults to the peer itself and
+	// can be narrowed via the input, e.g. shopware-developer → JACOB.
+	const [knowledgeQuery, setKnowledgeQuery] = useState("");
+	const [activeKnowledgeQuery, setActiveKnowledgeQuery] = useState("");
+	const [knowledgeTarget, setKnowledgeTarget] = useState("");
+	const {
+		data: knowledgeResults,
+		isLoading: knowledgeLoading,
+		error: knowledgeError,
+	} = useQueryPeerConclusions(
+		workspaceId,
+		peerId,
+		activeKnowledgeQuery,
+		knowledgeTarget.trim() || null,
+		Boolean(activeKnowledgeQuery),
+	);
 
 	const peerMeta = (peer as { metadata?: Record<string, unknown> } | undefined)?.metadata;
 	const displayName = peerDisplayName(peerMeta, peerId);
@@ -277,6 +298,99 @@ export function PeerDetail() {
 														)}
 													</div>
 													<Body className="whitespace-pre-wrap">{mask(r.content)}</Body>
+												</div>
+											))
+										)}
+									</motion.div>
+								)}
+							</AnimatePresence>
+						</motion.div>
+
+						{/* Knowledge search — conclusions this peer holds, scoped observer → observed */}
+						<motion.div
+							initial={{ opacity: 0, y: 8 }}
+							animate={{ opacity: 1, y: 0 }}
+							transition={{ delay: 0.07 }}
+							className="rounded-xl p-5 theme-card"
+						>
+							<SectionHeading className="flex items-center gap-1.5 mb-1">
+								<Brain className="w-3.5 h-3.5" strokeWidth={2} />
+								Search peer knowledge (conclusions)
+							</SectionHeading>
+							<Muted className="mb-3 block text-xs">
+								Semantic search over distilled conclusions this peer holds — not raw messages.
+								Scoped to observer <MonoCaption as="span">{mask(peerId)}</MonoCaption> → observed{" "}
+								<MonoCaption as="span">{mask(knowledgeTarget.trim() || peerId)}</MonoCaption>.
+							</Muted>
+							<form
+								onSubmit={(e) => {
+									e.preventDefault();
+									setActiveKnowledgeQuery(knowledgeQuery.trim());
+								}}
+								className="flex gap-2 mb-4"
+							>
+								<Input
+									value={knowledgeQuery}
+									onChange={(e) => setKnowledgeQuery(e.target.value)}
+									placeholder="Search this peer's conclusions…"
+									className="flex-1 text-sm"
+								/>
+								<Input
+									value={knowledgeTarget}
+									onChange={(e) => setKnowledgeTarget(e.target.value)}
+									placeholder="observed peer (optional)"
+									className="w-48 text-xs font-mono"
+								/>
+								<Button type="submit" variant="accent" disabled={knowledgeLoading}>
+									{knowledgeLoading ? "…" : "Search"}
+								</Button>
+								{activeKnowledgeQuery && (
+									<Button
+										type="button"
+										variant="surface"
+										onClick={() => {
+											setActiveKnowledgeQuery("");
+											setKnowledgeQuery("");
+										}}
+									>
+										<X className="w-3.5 h-3.5" strokeWidth={2} />
+									</Button>
+								)}
+							</form>
+							<ErrorAlert error={knowledgeError instanceof Error ? knowledgeError : null} />
+							<AnimatePresence>
+								{activeKnowledgeQuery && (
+									<motion.div
+										initial={{ opacity: 0, height: 0 }}
+										animate={{ opacity: 1, height: "auto" }}
+										exit={{ opacity: 0, height: 0 }}
+										className="space-y-3 overflow-hidden"
+									>
+										{knowledgeLoading ? (
+											<PageLoader />
+										) : !Array.isArray(knowledgeResults) ||
+											(knowledgeResults as components["schemas"]["Conclusion"][]).length === 0 ? (
+											<Muted>No conclusions found for this scope.</Muted>
+										) : (
+											(knowledgeResults as components["schemas"]["Conclusion"][]).map((c) => (
+												<div
+													key={c.id}
+													className="py-3 px-4 rounded-lg"
+													style={{
+														background: "var(--surface)",
+														border: "1px solid var(--border)",
+													}}
+												>
+													<div className="flex items-center gap-2 mb-1.5 flex-wrap">
+														<Badge variant="yellow">
+															{mask(c.observer_id)} → {mask(c.observed_id)}
+														</Badge>
+														{c.session_id && <Caption>session: {mask(c.session_id)}</Caption>}
+														{c.created_at && (
+															<Caption>{new Date(c.created_at).toLocaleString()}</Caption>
+														)}
+													</div>
+													<Body className="whitespace-pre-wrap">{mask(c.content)}</Body>
 												</div>
 											))
 										)}
