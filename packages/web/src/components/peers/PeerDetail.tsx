@@ -93,25 +93,31 @@ export function PeerDetail() {
 	const targetPeers = discovery?.targets ?? [];
 	const discoveryIncomplete = discovery !== undefined && !discovery.complete;
 
-	// Reset per-peer target state when the viewed peer changes: a stale target
-	// from the previous peer would silently scope the knowledge search wrong and
-	// a burnt auto-select flag would disable auto-picking for the new peer.
-	// Modified: 2026-09-17 — review round (ADV-stale-peer-target).
-	const prevPeerIdRef = useRef(peerId);
+	// Reset per-peer target state when the viewed workspace or peer changes: a
+	// stale target from the previous context would silently scope the knowledge
+	// search wrong and a burnt auto-select flag would disable auto-picking for
+	// the new context.
+	// Modified: 2026-09-17 — review round (ADV-stale-peer-target);
+	// review round 2: also key on workspaceId (COR-knowledge-workspace-scope-reset).
+	const prevScopeRef = useRef(`${workspaceId}\u0000${peerId}`);
 	useEffect(() => {
-		if (prevPeerIdRef.current !== peerId) {
-			prevPeerIdRef.current = peerId;
+		const scope = `${workspaceId}\u0000${peerId}`;
+		if (prevScopeRef.current !== scope) {
+			prevScopeRef.current = scope;
 			setKnowledgeTarget(null);
 			setTargetAutoSelected(false);
 		}
-	}, [peerId]);
+	}, [workspaceId, peerId]);
 
 	// Auto-select when exactly one real target exists (e.g. shopware-developer →
-	// JACOB). Only when nothing is picked yet, so an explicit user choice wins.
+	// JACOB). Only when nothing is picked yet, so an explicit user choice wins,
+	// and only when discovery is COMPLETE — a single target found by a
+	// cap-truncated walk is not proven to be the only one.
+	// Modified: 2026-09-17 — review round 2 (ARC-auto-select-incomplete-discovery).
 	const [targetAutoSelected, setTargetAutoSelected] = useState(false);
 	useEffect(() => {
 		if (targetAutoSelected || knowledgeTarget !== null || !discovery) return;
-		if (targetPeers.length === 1) {
+		if (discovery.complete && targetPeers.length === 1) {
 			setKnowledgeTarget(targetPeers[0].id);
 			setTargetAutoSelected(true);
 		}

@@ -701,6 +701,11 @@ export function useQueryConclusions(
  * Modified: 2026-09-17 — review round: return `complete` flag instead of
  * silently truncating at the page cap (ARC-discovery-walk-truncation /
  * ADV-discovery-page-cap).
+ * Modified: 2026-09-17 — review round 2: `complete` no longer reports a
+ * cap-truncated walk as complete when pages == MAX_PAGES + 1 (the loop exits
+ * with page === MAX_PAGES + 1 and the old `page >= pages` compared true);
+ * completeness is now tracked by observing the break reason directly
+ * (COR-discovery-truncation / ~ADV-discovery-page-cap).
  *
  * Author: Hermes (Pox subagent)
  */
@@ -711,6 +716,7 @@ export function useConclusionTargetPeers(workspaceId: string, observerPeerId: st
 			const counters = new Map<string, number>();
 			let page = 1;
 			let pages = 1;
+			let completed = false;
 			while (page <= CONCLUSION_TARGET_MAX_PAGES) {
 				const { data, error } = await client.current.POST(
 					"/v3/workspaces/{workspace_id}/conclusions/list",
@@ -730,14 +736,17 @@ export function useConclusionTargetPeers(workspaceId: string, observerPeerId: st
 					}
 				}
 				pages = data.pages ?? 1;
-				if (page >= pages || items.length === 0) break;
+				if (page >= pages || items.length === 0) {
+					completed = true;
+					break;
+				}
 				page += 1;
 			}
 			return {
 				targets: Array.from(counters.entries())
 					.map(([id, count]) => ({ id, count }))
 					.sort((a, b) => b.count - a.count || a.id.localeCompare(b.id)),
-				complete: page >= pages,
+				complete: completed,
 			};
 		},
 		enabled: Boolean(workspaceId) && Boolean(observerPeerId),
