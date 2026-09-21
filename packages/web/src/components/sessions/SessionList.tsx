@@ -22,6 +22,15 @@ const SORT_OPTIONS = [
 	{ value: "id", label: "ID" },
 ];
 
+// Server semantics (honcho fork): sessions/list supports ONLY `reverse` over
+// created_at — there is no sort-field parameter and no last-activity ordering.
+// created_at (Newest/Oldest) is therefore a GLOBAL server-side sort across all
+// pages; `active`/`id` have no server equivalent and remain page-local sorts
+// over the loaded slice (the list endpoint also returns only is_active rows,
+// so `active` is effectively a no-op). Changing this needs a honcho-side
+// sort-field parameter — out of scope here, documented as open point.
+const PAGE_LOCAL_SORT_FIELDS = new Set(["active", "id"]);
+
 const container: Variants = {
 	hidden: { opacity: 0 },
 	show: { opacity: 1, transition: { staggerChildren: 0.05 } },
@@ -38,18 +47,29 @@ export function SessionList() {
 	const [sortField, setSortField] = useState("created_at");
 	const [sortDir, setSortDir] = useState<SortDir>("desc");
 	const navigate = useNavigate();
-	const { data, isLoading, error } = useSessions(workspaceId, page);
+	// created_at is sorted SERVER-SIDE over the whole result set (honcho
+	// `reverse` query param): desc = Newest, asc = Oldest. The server has no
+	// sort-field parameter — `id`/`active` stay page-local client sorts (see
+	// PAGE_LOCAL_SORT_FIELDS note).
+	const isServerSorted = !PAGE_LOCAL_SORT_FIELDS.has(sortField);
+	const { data, isLoading, error } = useSessions(
+		workspaceId,
+		page,
+		20,
+		isServerSorted ? sortDir === "desc" : true,
+	);
 
 	const sessions: Session[] = (data as { items?: Session[] } | undefined)?.items ?? [];
 	const totalPages = (data as { pages?: number } | undefined)?.pages ?? 1;
 	const total = (data as { total?: number } | undefined)?.total ?? 0;
 
 	const sorted = useMemo(() => {
+		// created_at: server already paginates in the requested global order —
+		// re-sorting here would only shuffle the loaded page and hide the rest.
+		if (isServerSorted) return sessions;
 		return [...sessions].sort((a, b) => {
 			let cmp = 0;
-			if (sortField === "created_at") {
-				cmp = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-			} else if (sortField === "active") {
+			if (sortField === "active") {
 				// active sessions first (true > false)
 				cmp = Number(a.is_active) - Number(b.is_active);
 			} else if (sortField === "id") {
@@ -57,7 +77,7 @@ export function SessionList() {
 			}
 			return sortDir === "asc" ? cmp : -cmp;
 		});
-	}, [sessions, sortField, sortDir]);
+	}, [sessions, sortField, sortDir, isServerSorted]);
 
 	function handleSort(field: string, dir: SortDir) {
 		setSortField(field);
@@ -83,7 +103,7 @@ export function SessionList() {
 							{total}
 						</span>
 					)}
-					<div className="ml-auto">
+					<div className="ml-auto flex items-center gap-2">
 						<SortControl
 							options={SORT_OPTIONS}
 							field={sortField}
