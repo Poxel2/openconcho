@@ -1,7 +1,7 @@
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { motion, type Variants } from "framer-motion";
 import { ChevronRight, CircleDot, Clock, MessageSquare } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useSessions } from "@/api/queries";
 import type { components } from "@/api/schema.d.ts";
 import { Breadcrumb } from "@/components/layout/Breadcrumb";
@@ -16,20 +16,17 @@ import { COLOR } from "@/lib/constants";
 
 type Session = components["schemas"]["Session"];
 
-const SORT_OPTIONS = [
-	{ value: "created_at", label: "Newest" },
-	{ value: "active", label: "Active" },
-	{ value: "id", label: "ID" },
-];
+const SORT_OPTIONS = [{ value: "created_at", label: "Newest" }];
 
-// Server semantics (honcho fork): sessions/list supports ONLY `reverse` over
-// created_at — there is no sort-field parameter and no last-activity ordering.
-// created_at (Newest/Oldest) is therefore a GLOBAL server-side sort across all
-// pages; `active`/`id` have no server equivalent and remain page-local sorts
-// over the loaded slice (the list endpoint also returns only is_active rows,
-// so `active` is effectively a no-op). Changing this needs a honcho-side
+// Server semantics (honcho fork): sessions/list orders by created_at only and
+// exposes the `reverse` query flag — there is no sort-field parameter and no
+// last-activity ordering. The sort direction is therefore a GLOBAL server-side
+// sort across all pages. Fields without a server equivalent (former `active`
+// and `id` options) were removed rather than kept as page-local sorts: a
+// page-local sort over a paginated workspace silently shows the extreme of the
+// loaded slice, not of the workspace (the bug PR #109 fixed for created_at).
+// A global active/id sort or last-activity ordering needs a honcho-side
 // sort-field parameter — out of scope here, documented as open point.
-const PAGE_LOCAL_SORT_FIELDS = new Set(["active", "id"]);
 
 const container: Variants = {
 	hidden: { opacity: 0 },
@@ -44,44 +41,23 @@ export function SessionList() {
 	const { mask } = useDemo();
 	const { workspaceId } = useParams({ strict: false }) as { workspaceId: string };
 	const [page, setPage] = useState(1);
-	const [sortField, setSortField] = useState("created_at");
 	const [sortDir, setSortDir] = useState<SortDir>("desc");
 	const navigate = useNavigate();
 	// created_at is sorted SERVER-SIDE over the whole result set (honcho
-	// `reverse` query param): desc = Newest, asc = Oldest. The server has no
-	// sort-field parameter — `id`/`active` stay page-local client sorts (see
-	// PAGE_LOCAL_SORT_FIELDS note).
-	const isServerSorted = !PAGE_LOCAL_SORT_FIELDS.has(sortField);
-	const { data, isLoading, error } = useSessions(
-		workspaceId,
-		page,
-		20,
-		isServerSorted ? sortDir === "desc" : true,
-	);
+	// `reverse` query param): desc = Newest, asc = Oldest. There is no
+	// page-local re-sort — direction changes re-request from the server.
+	const reverse = sortDir === "desc";
+	const { data, isLoading, error } = useSessions(workspaceId, page, 20, reverse);
 
 	const sessions: Session[] = (data as { items?: Session[] } | undefined)?.items ?? [];
 	const totalPages = (data as { pages?: number } | undefined)?.pages ?? 1;
 	const total = (data as { total?: number } | undefined)?.total ?? 0;
 
-	const sorted = useMemo(() => {
-		// created_at: server already paginates in the requested global order —
-		// re-sorting here would only shuffle the loaded page and hide the rest.
-		if (isServerSorted) return sessions;
-		return [...sessions].sort((a, b) => {
-			let cmp = 0;
-			if (sortField === "active") {
-				// active sessions first (true > false)
-				cmp = Number(a.is_active) - Number(b.is_active);
-			} else if (sortField === "id") {
-				cmp = a.id.localeCompare(b.id);
-			}
-			return sortDir === "asc" ? cmp : -cmp;
-		});
-	}, [sessions, sortField, sortDir, isServerSorted]);
+	const sorted = sessions;
 
-	function handleSort(field: string, dir: SortDir) {
-		setSortField(field);
+	function handleSort(_field: string, dir: SortDir) {
 		setSortDir(dir);
+		setPage(1);
 	}
 
 	return (
@@ -106,7 +82,7 @@ export function SessionList() {
 					<div className="ml-auto flex items-center gap-2">
 						<SortControl
 							options={SORT_OPTIONS}
-							field={sortField}
+							field="created_at"
 							dir={sortDir}
 							onChange={handleSort}
 						/>
