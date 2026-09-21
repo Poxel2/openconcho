@@ -316,14 +316,14 @@ export function useChat(
 
 export function useSessions(workspaceId: string, page = 1, pageSize = 20) {
 	return useQuery({
-		queryKey: QK.sessions(workspaceId, page, pageSize),
+		queryKey: QK.sessions(workspaceId, page, pageSize, true),
 		queryFn: async () => {
 			const { data, error } = await client.current.POST(
 				"/v3/workspaces/{workspace_id}/sessions/list",
 				{
 					params: {
 						path: { workspace_id: workspaceId },
-						query: { page, page_size: pageSize },
+						query: { page, size: pageSize, reverse: true },
 					},
 					body: {},
 				},
